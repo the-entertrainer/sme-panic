@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SME PANIC: The Flappy Bird Game</title>
+    <style>
+        :root {
+            --primary: #FFD60A;
+            --secondary: #0A0A0A;
+            --accent: #FF006E;
+            --success: #00F5FF;
+            --danger: #FF4444;
+            --dark-bg: #0D1117;
+            --dark-surface: #161B22;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: var(--dark-bg);
+            font-family: 'Courier New', monospace;
+            color: #fff;
+        }
+
+        #gameContainer {
+            position: relative;
+            width: 100%;
+            height: 100vh;
+            background: linear-gradient(135deg, #1a1f2e 0%, #0f1419 100%);
+            overflow: hidden;
+            touch-action: none;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+
+        #ui {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .hud {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 30px;
+            color: var(--primary);
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            z-index: 10;
+            font-family: 'Courier New', monospace;
+            letter-spacing: 2px;
+        }
+
+        .score-display {
+            background: rgba(255, 214, 10, 0.15);
+            padding: 12px 24px;
+            border: 2px solid var(--primary);
+            border-radius: 8px;
+            box-shadow: 0 0 20px rgba(255, 214, 10, 0.3);
+        }
+
+        .pillar-counter {
+            background: rgba(0, 245, 255, 0.15);
+            padding: 12px 24px;
+            border: 2px solid var(--success);
+            border-radius: 8px;
+            box-shadow: 0 0 20px rgba(0, 245, 255, 0.3);
+        }
+
+        #gameOverScreen {
+            position: absolute;
+            inset: 0;
+            background: rgba(13, 17, 23, 0.95);
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+            pointer-events: auto;
+            backdrop-filter: blur(4px);
+        }
+
+        #gameOverScreen.show {
+            display: flex;
+        }
+
+        .game-over-content {
+            text-align: center;
+            animation: slideInDown 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        @keyframes slideInDown {
+            from {
+                transform: translateY(-100px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .game-over-title {
+            font-size: 60px;
+            font-weight: bold;
+            margin-bottom: 30px;
+            color: var(--primary);
+            text-shadow: 0 0 20px rgba(255, 214, 10, 0.5);
+            letter-spacing: 3px;
+        }
+
+        .final-stats {
+            margin: 40px 0;
+            padding: 30px;
+            background: rgba(22, 27, 34, 0.8);
+            border: 3px solid var(--primary);
+            border-radius: 12px;
+            min-width: 400px;
+            max-width: 90%;
+        }
+
+        .stat-row {
+            font-size: 28px;
+            margin: 20px 0;
+            color: var(--success);
+            text-shadow: 0 0 10px rgba(0, 245, 255, 0.4);
+        }
+
+        .stat-label {
+            color: #aaa;
+            font-size: 18px;
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            color: var(--primary);
+            font-size: 48px;
+            font-weight: bold;
+        }
+
+        #achievementsList {
+            margin: 40px 0;
+            max-height: 400px;
+            overflow-y: auto;
+            width: 90%;
+            max-width: 700px;
+        }
+
+        .achievement-item {
+            background: rgba(255, 214, 10, 0.1);
+            border-left: 4px solid var(--primary);
+            padding: 15px 20px;
+            margin: 10px 0;
+            border-radius: 6px;
+            font-size: 16px;
+            animation: slideInLeft 0.5s ease-out;
+        }
+
+        @keyframes slideInLeft {
+            from {
+                transform: translateX(-50px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .achievement-badge {
+            color: var(--accent);
+            font-weight: bold;
+            display: inline-block;
+            margin-right: 10px;
+        }
+
+        .restart-button {
+            margin-top: 40px;
+            padding: 18px 50px;
+            font-size: 24px;
+            font-weight: bold;
+            background: linear-gradient(135deg, var(--primary), #FFB700);
+            color: var(--secondary);
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 8px 20px rgba(255, 214, 10, 0.3);
+            letter-spacing: 2px;
+            font-family: 'Courier New', monospace;
+            pointer-events: auto;
+        }
+
+        .restart-button:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 12px 30px rgba(255, 214, 10, 0.5);
+        }
+
+        .restart-button:active {
+            transform: translateY(-1px);
+        }
+
+        #startScreen {
+            position: absolute;
+            inset: 0;
+            background: rgba(13, 17, 23, 0.98);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 101;
+            pointer-events: auto;
+        }
+
+        #startScreen.hidden {
+            display: none;
+        }
+
+        .start-content {
+            text-align: center;
+            animation: fadeIn 0.8s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: scale(0.9);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        .game-title {
+            font-size: 64px;
+            font-weight: bold;
+            margin-bottom: 20px;
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: 3px;
+            text-shadow: 0 0 30px rgba(255, 214, 10, 0.3);
+        }
+
+        .game-subtitle {
+            font-size: 28px;
+            color: var(--success);
+            margin-bottom: 50px;
+            letter-spacing: 1px;
+        }
+
+        .instructions {
+            background: rgba(22, 27, 34, 0.8);
+            border: 2px solid var(--primary);
+            padding: 30px;
+            margin: 30px 0;
+            border-radius: 12px;
+            font-size: 18px;
+            max-width: 500px;
+            line-height: 1.8;
+            color: #ddd;
+        }
+
+        .instructions p {
+            margin: 10px 0;
+        }
+
+        .key-highlight {
+            color: var(--primary);
+            font-weight: bold;
+            background: rgba(255, 214, 10, 0.2);
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+
+        .start-button {
+            margin-top: 40px;
+            padding: 20px 60px;
+            font-size: 28px;
+            font-weight: bold;
+            background: linear-gradient(135deg, var(--primary), #FFB700);
+            color: var(--secondary);
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 10px 30px rgba(255, 214, 10, 0.4);
+            letter-spacing: 2px;
+            font-family: 'Courier New', monospace;
+            pointer-events: auto;
+        }
+
+        .start-button:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(255, 214, 10, 0.6);
+        }
+
+        .start-button:active {
+            transform: translateY(-2px);
+        }
+
+        @media (max-width: 768px) {
+            .hud {
+                font-size: 18px;
+                padding: 15px 20px;
+            }
+
+            .score-display,
+            .pillar-counter {
+                padding: 8px 16px;
+                font-size: 16px;
+            }
+
+            .game-over-title {
+                font-size: 40px;
+            }
+
+            .final-stats {
+                min-width: auto;
+                padding: 20px;
+            }
+
+            .stat-value {
+                font-size: 36px;
+            }
+
+            .stat-row {
+                font-size: 20px;
+            }
+
+            .game-title {
+                font-size: 44px;
+            }
+
+            .game-subtitle {
+                font-size: 20px;
+            }
+
+            .instructions {
+                font-size: 16px;
+                padding: 20px;
+            }
+
+            .start-button,
+            .restart-button {
+                padding: 15px 40px;
+                font-size: 20px;
+            }
+        }
+
+        /* Scrollbar styling for achievements */
+        #achievementsList::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        #achievementsList::-webkit-scrollbar-track {
+            background: rgba(255, 214, 10, 0.1);
+            border-radius: 4px;
+        }
+
+        #achievementsList::-webkit-scrollbar-thumb {
+            background: var(--primary);
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas"></canvas>
+        
+        <div id="startScreen">
+            <div class="start-content">
+                <div class="game-title">SME PANIC</div>
+                <div class="game-subtitle">The Instructional Designer's Nightmare</div>
+                
+                <div class="instructions">
+                    <p>Navigate through SME review cycles without losing your mind.</p>
+                    <p><span class="key-highlight">CLICK / TAP</span> or <span class="key-highlight">SPACE</span> to flap</p>
+                    <p>Collect ☕ for slow-mo and 🛡️ for shields</p>
+                    <p>Reach 100 pillars and unlock "CERTIFIED L&D LEGEND"</p>
+                </div>
+
+                <button class="start-button">START GAME</button>
+            </div>
+        </div>
+
+        <div id="ui">
+            <div class="hud">
+                <div class="score-display">SCORE: <span id="scoreValue">0</span></div>
+                <div class="pillar-counter">PILLARS: <span id="pillarValue">0</span>/100</div>
+            </div>
+        </div>
+
+        <div id="gameOverScreen">
+            <div class="game-over-content">
+                <div class="game-over-title">GAME OVER</div>
+                
+                <div class="final-stats">
+                    <div class="stat-row">
+                        <span class="stat-label">Final Score</span>
+                        <span class="stat-value" id="finalScore">0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Pillars Crossed</span>
+                        <span class="stat-value" id="finalPillars">0</span>/100
+                    </div>
+                </div>
+
+                <div style="color: var(--accent); font-size: 22px; margin-bottom: 20px;">🏆 ACHIEVEMENTS UNLOCKED 🏆</div>
+                <div id="achievementsList"></div>
+
+                <button class="restart-button">PLAY AGAIN</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // === AUDIO ENGINE ===
+        class AudioEngine {
+            constructor() {
+                this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+
+            playFlap() {
+                const osc = this.audioContext.createOscillator();
+                const gain = this.audioContext.createGain();
+                osc.connect(gain);
+                gain.connect(this.audioContext.destination);
+                osc.frequency.setValueAtTime(400, this.audioContext.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(600, this.audioContext.currentTime + 0.1);
+                gain.gain.setValueAtTime(0.3, this.audioContext.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, this.audioContext.currentTime + 0.1);
+                osc.start(this.audioContext.currentTime);
+                osc.stop(this.audioContext.currentTime + 0.1);
+            }
+
+            playScore() {
+                const osc = this.audioContext.createOscillator();
+                const gain = this.audioContext.createGain();
+                osc.connect(gain);
+                gain.connect(this.audioContext.destination);
+                osc.frequency.setValueAtTime(800, this.audioContext.currentTime);
+                gain.gain.setValueAtTime(0.3, this.audioContext.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, this.audioContext.currentTime + 0.15);
+                osc.start(this.audioContext.currentTime);
+                osc.stop(this.audioContext.currentTime + 0.15);
+            }
+
+            playHit() {
+                const osc = this.audioContext.createOscillator();
+                const gain = this.audioContext.createGain();
+                osc.connect(gain);
+                gain.connect(this.audioContext.destination);
+                osc.frequency.setValueAtTime(200, this.audioContext.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(100, this.audioContext.currentTime + 0.2);
+                gain.gain.setValueAtTime(0.3, this.audioContext.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, this.audioContext.currentTime + 0.2);
+                osc.start(this.audioContext.currentTime);
+                osc.stop(this.audioContext.currentTime + 0.2);
+            }
+
+            playAchievement() {
+                const notes = [523.25, 659.25, 783.99];
+                notes.forEach((freq, idx) => {
+                    const osc = this.audioContext.createOscillator();
+                    const gain = this.audioContext.createGain();
+                    osc.connect(gain);
+                    gain.connect(this.audioContext.destination);
+                    osc.frequency.setValueAtTime(freq, this.audioContext.currentTime);
+                    gain.gain.setValueAtTime(0.2, this.audioContext.currentTime + idx * 0.05);
+                    gain.gain.exponentialRampToValueAtTime(0.01, this.audioContext.currentTime + idx * 0.05 + 0.15);
+                    osc.start(this.audioContext.currentTime + idx * 0.05);
+                    osc.stop(this.audioContext.currentTime + idx * 0.05 + 0.15);
+                });
+            }
+        }
+
+        // === GAME STATE ===
+        const ACHIEVEMENTS = [
+            { pillars: 5, name: "🤡 SME Whisperer" },
+            { pillars: 10, name: "📅 Made it to Friday" },
+            { pillars: 15, name: "💬 The SME Replied!" },
+            { pillars: 20, name: "✏️ Only 40 more edits" },
+            { pillars: 25, name: "💰 Budget Approved™" },
+            { pillars: 30, name: "📈 Scope Creep Mastery" },
+            { pillars: 35, name: "🧠 Still got my sanity" },
+            { pillars: 40, name: "⚠️ That's not in the requirements" },
+            { pillars: 45, name: "💛 PowerPoint to Storyline ✓" },
+            { pillars: 50, name: "🚫 SME GHOSTING AVOIDED" },
+            { pillars: 55, name: "🎮 Interactive? Sure." },
+            { pillars: 60, name: "😍 They loved it!" },
+            { pillars: 65, name: "🚀 Wait, we shipped?" },
+            { pillars: 70, name: "🌍 Localization incoming..." },
+            { pillars: 75, name: "♻️ Version 2 already?" },
+            { pillars: 80, name: "📦 LMS loves me" },
+            { pillars: 85, name: "✨ Zero Defects" },
+            { pillars: 90, name: "📱 Going live Monday!" },
+            { pillars: 95, name: "😭 Still going live Monday..." },
+            { pillars: 100, name: "👑 CERTIFIED L&D LEGEND" }
+        ];
+
+        class GameState {
+            constructor() {
+                this.reset();
+            }
+
+            reset() {
+                this.score = 0;
+                this.pillars = 0;
+                this.velocity = 0;
+                this.playerY = 0;
+                this.gravity = 0.6;
+                this.flapPower = -12;
+                this.gameRunning = false;
+                this.slowMoActive = false;
+                this.shieldActive = false;
+                this.unlockedAchievements = [];
+            }
+        }
+
+        // === PILLAR CLASS ===
+        class Pillar {
+            constructor(x, canvasHeight) {
+                this.x = x;
+                this.canvasHeight = canvasHeight;
+                this.width = 60;
+                this.gapSize = 150;
+                this.gapY = Math.random() * (canvasHeight - this.gapSize - 100) + 50;
+                this.speed = 5;
+                this.passed = false;
+                this.type = Math.random() > 0.7 ? (Math.random() > 0.5 ? 'coffee' : 'shield') : 'normal';
+                this.powerupY = this.gapY + this.gapSize / 2 - 15;
+                this.collected = false;
+            }
+
+            update() {
+                this.speed = 5 * (window.gameSlowMo ? 0.5 : 1);
+                this.x -= this.speed;
+            }
+
+            draw(ctx) {
+                // Top pillar
+                ctx.fillStyle = '#FF006E';
+                ctx.fillRect(this.x, 0, this.width, this.gapY);
+
+                // Bottom pillar
+                ctx.fillRect(this.x, this.gapY + this.gapSize, this.width, this.canvasHeight);
+
+                // Glow effect
+                ctx.strokeStyle = 'rgba(255, 0, 110, 0.5)';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(this.x, 0, this.width, this.gapY);
+                ctx.strokeRect(this.x, this.gapY + this.gapSize, this.width, this.canvasHeight - this.gapY - this.gapSize);
+
+                // Draw powerup
+                if (!this.collected) {
+                    if (this.type === 'coffee') {
+                        ctx.fillStyle = '#8B4513';
+                        ctx.fillRect(this.x + this.width / 2 - 12, this.powerupY, 24, 30);
+                        ctx.fillStyle = '#FFD60A';
+                        ctx.fillRect(this.x + this.width / 2 - 10, this.powerupY + 2, 20, 8);
+                    } else if (this.type === 'shield') {
+                        ctx.fillStyle = '#00F5FF';
+                        ctx.beginPath();
+                        ctx.moveTo(this.x + this.width / 2, this.powerupY);
+                        ctx.lineTo(this.x + this.width / 2 + 15, this.powerupY + 10);
+                        ctx.lineTo(this.x + this.width / 2 + 12, this.powerupY + 30);
+                        ctx.lineTo(this.x + this.width / 2 - 12, this.powerupY + 30);
+                        ctx.lineTo(this.x + this.width / 2 - 15, this.powerupY + 10);
+                        ctx.closePath();
+                        ctx.fill();
+                    }
+                }
+            }
+
+            isOffScreen() {
+                return this.x + this.width < 0;
+            }
+        }
+
+        // === GAME CLASS ===
+        class SMEPanicGame {
+            constructor() {
+                this.canvas = document.getElementById('gameCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.audio = new AudioEngine();
+                this.state = new GameState();
+                this.pillars = [];
+                this.pillarSpawnTimer = 0;
+                this.pillarSpawnRate = 100;
+                this.slowMoTimer = 0;
+                this.shieldTimer = 0;
+                this.playerSize = 30;
+                this.setupCanvas();
+                this.setupEventListeners();
+                this.showStartScreen();
+            }
+
+            setupCanvas() {
+                this.resizeCanvas();
+                window.addEventListener('resize', () => this.resizeCanvas());
+            }
+
+            resizeCanvas() {
+                this.canvas.width = window.innerWidth;
+                this.canvas.height = window.innerHeight;
+                this.state.playerY = this.canvas.height / 2;
+            }
+
+            setupEventListeners() {
+                document.addEventListener('keydown', (e) => {
+                    if (e.code === 'Space') {
+                        e.preventDefault();
+                        this.handleFlap();
+                    }
+                });
+
+                document.addEventListener('click', () => this.handleFlap());
+                document.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    this.handleFlap();
+                });
+
+                document.querySelector('.start-button').addEventListener('click', () => this.startGame());
+                document.querySelectorAll('.restart-button').forEach(btn => {
+                    btn.addEventListener('click', () => this.startGame());
+                });
+            }
+
+            showStartScreen() {
+                document.getElementById('startScreen').classList.remove('hidden');
+            }
+
+            hideStartScreen() {
+                document.getElementById('startScreen').classList.add('hidden');
+            }
+
+            startGame() {
+                this.hideStartScreen();
+                document.getElementById('gameOverScreen').classList.remove('show');
+                this.state.reset();
+                this.pillars = [];
+                this.pillarSpawnTimer = 0;
+                this.slowMoTimer = 0;
+                this.shieldTimer = 0;
+                this.state.gameRunning = true;
+                this.gameLoop();
+            }
+
+            handleFlap() {
+                if (this.state.gameRunning) {
+                    this.state.velocity = this.state.flapPower;
+                    this.audio.playFlap();
+                }
+            }
+
+            gameLoop() {
+                this.update();
+                this.draw();
+
+                if (this.state.gameRunning) {
+                    requestAnimationFrame(() => this.gameLoop());
+                }
+            }
+
+            update() {
+                const delta = this.state.slowMoActive ? 0.5 : 1;
+
+                this.state.velocity += this.state.gravity * delta;
+                this.state.playerY += this.state.velocity * delta;
+
+                // Boundaries
+                if (this.state.playerY < 0 || this.state.playerY > this.canvas.height) {
+                    if (!this.state.shieldActive) {
+                        this.endGame();
+                    } else {
+                        this.state.shieldActive = false;
+                        this.state.velocity = this.state.flapPower;
+                        this.audio.playFlap();
+                    }
+                }
+
+                // Spawn pillars
+                this.pillarSpawnTimer++;
+                if (this.pillarSpawnTimer >= this.pillarSpawnRate) {
+                    this.pillars.push(new Pillar(this.canvas.width, this.canvas.height));
+                    this.pillarSpawnTimer = 0;
+                }
+
+                // Update pillars
+                this.pillars.forEach(pillar => {
+                    pillar.update();
+
+                    // Check collision
+                    const playerX = this.canvas.width * 0.1;
+                    const playerLeft = playerX - this.playerSize / 2;
+                    const playerRight = playerX + this.playerSize / 2;
+                    const playerTop = this.state.playerY - this.playerSize / 2;
+                    const playerBottom = this.state.playerY + this.playerSize / 2;
+
+                    if (playerLeft < pillar.x + pillar.width &&
+                        playerRight > pillar.x &&
+                        (playerTop < pillar.gapY ||
+                         playerBottom > pillar.gapY + pillar.gapSize)) {
+                        
+                        if (!this.state.shieldActive) {
+                            this.endGame();
+                        } else {
+                            this.state.shieldActive = false;
+                            this.audio.playHit();
+                        }
+                    }
+
+                    // Check powerup collection
+                    if (!pillar.collected && 
+                        playerLeft < pillar.x + pillar.width &&
+                        playerRight > pillar.x &&
+                        playerTop < pillar.powerupY + 30 &&
+                        playerBottom > pillar.powerupY) {
+                        
+                        pillar.collected = true;
+                        if (pillar.type === 'coffee') {
+                            this.state.slowMoActive = true;
+                            this.slowMoTimer = 300;
+                        } else if (pillar.type === 'shield') {
+                            this.state.shieldActive = true;
+                            this.shieldTimer = 300;
+                        }
+                        this.audio.playScore();
+                        this.state.score += 50;
+                    }
+
+                    // Pillar passed (score)
+                    if (!pillar.passed && pillar.x + pillar.width < playerX) {
+                        pillar.passed = true;
+                        this.state.score += 10;
+                        this.state.pillars++;
+                        this.audio.playScore();
+                        this.checkAchievements();
+
+                        // Difficulty increase
+                        if (this.state.pillars % 10 === 0) {
+                            this.pillarSpawnRate = Math.max(70, this.pillarSpawnRate - 5);
+                        }
+                    }
+                });
+
+                // Remove offscreen pillars
+                this.pillars = this.pillars.filter(p => !p.isOffScreen());
+
+                // Update powerup timers
+                if (this.state.slowMoActive) {
+                    this.slowMoTimer--;
+                    if (this.slowMoTimer <= 0) {
+                        this.state.slowMoActive = false;
+                    }
+                }
+
+                if (this.state.shieldActive) {
+                    this.shieldTimer--;
+                    if (this.shieldTimer <= 0) {
+                        this.state.shieldActive = false;
+                    }
+                }
+
+                // Update HUD
+                document.getElementById('scoreValue').textContent = this.state.score;
+                document.getElementById('pillarValue').textContent = this.state.pillars;
+            }
+
+            checkAchievements() {
+                ACHIEVEMENTS.forEach(ach => {
+                    if (this.state.pillars === ach.pillars &&
+                        !this.state.unlockedAchievements.find(a => a.pillars === ach.pillars)) {
+                        this.state.unlockedAchievements.push(ach);
+                        this.audio.playAchievement();
+                    }
+                });
+            }
+
+            draw() {
+                // Background
+                this.ctx.fillStyle = '#0D1117';
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+                // Grid pattern
+                this.ctx.strokeStyle = 'rgba(255, 214, 10, 0.05)';
+                this.ctx.lineWidth = 1;
+                const gridSize = 40;
+                for (let i = 0; i < this.canvas.width; i += gridSize) {
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(i, 0);
+                    this.ctx.lineTo(i, this.canvas.height);
+                    this.ctx.stroke();
+                }
+                for (let i = 0; i < this.canvas.height; i += gridSize) {
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(0, i);
+                    this.ctx.lineTo(this.canvas.width, i);
+                    this.ctx.stroke();
+                }
+
+                // Draw pillars
+                this.pillars.forEach(pillar => pillar.draw(this.ctx));
+
+                // Draw player
+                this.drawPlayer();
+
+                // Draw powerup status
+                this.drawPowerupStatus();
+            }
+
+            drawPlayer() {
+                const playerX = this.canvas.width * 0.1;
+                const size = this.playerSize;
+
+                // Shadow
+                this.ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+                this.ctx.fillRect(playerX - size / 2, this.state.playerY + size / 2 + 5, size, 4);
+
+                // Body
+                this.ctx.fillStyle = '#FFD60A';
+                this.ctx.fillRect(playerX - size / 2, this.state.playerY - size / 2, size, size);
+
+                // Eyes
+                this.ctx.fillStyle = '#0A0A0A';
+                this.ctx.fillRect(playerX - 12, this.state.playerY - 10, 6, 6);
+                this.ctx.fillRect(playerX + 6, this.state.playerY - 10, 6, 6);
+
+                // Pupil
+                const pupilOffset = Math.min(Math.max(this.state.velocity / 10, -2), 2);
+                this.ctx.fillStyle = '#000';
+                this.ctx.fillRect(playerX - 10 + pupilOffset, this.state.playerY - 8, 2, 2);
+                this.ctx.fillRect(playerX + 8 + pupilOffset, this.state.playerY - 8, 2, 2);
+
+                // Mouth
+                this.ctx.strokeStyle = '#0A0A0A';
+                this.ctx.lineWidth = 1.5;
+                this.ctx.beginPath();
+                this.ctx.moveTo(playerX - 5, this.state.playerY + 5);
+                this.ctx.lineTo(playerX + 5, this.state.playerY + 5);
+                this.ctx.stroke();
+
+                // Wings
+                const wingOffset = Math.sin(Date.now() / 100) * 3;
+                this.ctx.fillStyle = '#FF006E';
+                this.ctx.fillRect(playerX - size / 2 - 8, this.state.playerY - 8 + wingOffset, 6, 14);
+                this.ctx.fillRect(playerX + size / 2 + 2, this.state.playerY - 8 - wingOffset, 6, 14);
+
+                // Shield glow
+                if (this.state.shieldActive) {
+                    this.ctx.strokeStyle = 'rgba(0, 245, 255, 0.8)';
+                    this.ctx.lineWidth = 3;
+                    this.ctx.beginPath();
+                    this.ctx.arc(playerX, this.state.playerY, 40, 0, Math.PI * 2);
+                    this.ctx.stroke();
+                }
+
+                // Slow-mo effect
+                if (this.state.slowMoActive) {
+                    this.ctx.strokeStyle = 'rgba(139, 69, 19, 0.6)';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.beginPath();
+                    this.ctx.arc(playerX, this.state.playerY, 45, 0, Math.PI * 2);
+                    this.ctx.stroke();
+                }
+            }
+
+            drawPowerupStatus() {
+                const statusX = this.canvas.width * 0.85;
+                const statusY = 80;
+
+                if (this.state.slowMoActive) {
+                    this.ctx.fillStyle = 'rgba(139, 69, 19, 0.3)';
+                    this.ctx.fillRect(statusX - 60, statusY, 120, 40);
+                    this.ctx.strokeStyle = '#8B4513';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.strokeRect(statusX - 60, statusY, 120, 40);
+                    this.ctx.fillStyle = '#8B4513';
+                    this.ctx.font = 'bold 16px Courier New';
+                    this.ctx.textAlign = 'center';
+                    this.ctx.fillText('☕ SLOW-MO', statusX, statusY + 28);
+                }
+
+                if (this.state.shieldActive) {
+                    this.ctx.fillStyle = 'rgba(0, 245, 255, 0.3)';
+                    this.ctx.fillRect(statusX - 60, statusY + 50, 120, 40);
+                    this.ctx.strokeStyle = '#00F5FF';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.strokeRect(statusX - 60, statusY + 50, 120, 40);
+                    this.ctx.fillStyle = '#00F5FF';
+                    this.ctx.font = 'bold 16px Courier New';
+                    this.ctx.textAlign = 'center';
+                    this.ctx.fillText('🛡️ SHIELD', statusX, statusY + 78);
+                }
+            }
+
+            endGame() {
+                this.state.gameRunning = false;
+                this.audio.playHit();
+                this.showGameOverScreen();
+            }
+
+            showGameOverScreen() {
+                document.getElementById('finalScore').textContent = this.state.score;
+                document.getElementById('finalPillars').textContent = this.state.pillars;
+
+                const achievementsList = document.getElementById('achievementsList');
+                achievementsList.innerHTML = '';
+
+                if (this.state.unlockedAchievements.length === 0) {
+                    const div = document.createElement('div');
+                    div.className = 'achievement-item';
+                    div.innerHTML = '😅 No achievements unlocked. Keep practicing!';
+                    achievementsList.appendChild(div);
+                } else {
+                    this.state.unlockedAchievements.forEach((ach) => {
+                        const div = document.createElement('div');
+                        div.className = 'achievement-item';
+                        div.innerHTML = `<span class="achievement-badge">✓</span> ${ach.name}`;
+                        achievementsList.appendChild(div);
+                    });
+                }
+
+                document.getElementById('gameOverScreen').classList.add('show');
+            }
+        }
+
+        // === INITIALIZE GAME ===
+        window.addEventListener('DOMContentLoaded', () => {
+            new SMEPanicGame();
+        });
+    </script>
+</body>
+</html>
