@@ -8,7 +8,7 @@
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#000;overflow:hidden;font-family:'Courier New',monospace;touch-action:none;-webkit-tap-highlight-color:transparent}
 #c{display:block;width:100vw;height:100vh}
-#pcanvas{position:fixed;bottom:0;left:50%;transform:translateX(-50%);pointer-events:none;z-index:10}
+#pcanvas{position:fixed;bottom:0;left:50%;transform-origin:bottom center;pointer-events:none;z-index:10}
 #hud{position:fixed;top:0;left:0;right:0;z-index:20;padding:7px 10px;display:flex;justify-content:space-between;align-items:flex-start;pointer-events:none}
 .hcol{display:flex;flex-direction:column;gap:3px}
 .hrow{display:flex;gap:5px;align-items:center}
@@ -34,6 +34,8 @@ body{background:#000;overflow:hidden;font-family:'Courier New',monospace;touch-a
 #finover{position:fixed;inset:0;background:rgba(0,0,0,.94);display:none;flex-direction:column;align-items:center;justify-content:center;z-index:200}
 #finover h2{font-size:clamp(30px,7vw,56px);color:#ff0;text-shadow:3px 3px 0 #c00;margin-bottom:18px}
 #fstats{font-size:17px;color:#bbb;line-height:2.5;text-align:center;margin-bottom:28px}
+/* Off-road danger vignette */
+#vign{position:fixed;inset:0;pointer-events:none;z-index:16;opacity:0;transition:opacity .1s;background:radial-gradient(ellipse at center, transparent 42%, rgba(220,0,0,.78) 100%)}
 </style>
 </head>
 <body>
@@ -57,6 +59,7 @@ body{background:#000;overflow:hidden;font-family:'Courier New',monospace;touch-a
 </div>
 
 <div id="cmsg"></div>
+<div id="vign"></div>
 
 <div id="thint">
   <div class="th">◀ STEER<br>tap·punch<br>dbl·kick</div>
@@ -98,22 +101,68 @@ const NPC_COLS  = ['#e44','#2c9','#fd3','#c5f','#3cf'];
 const NPC_NAMES = ['Viper','Snake','Hawk','Wolf','Blade'];
 const ZONE_NAMES= ['CITY','COUNTRYSIDE','LAKESIDE','HIGHWAY'];
 
-const ZONE_SKY = [0x334466, 0x5588cc, 0x3366aa, 0x223355];
-const ZONE_FOG_NEAR = [70,110,90,75];
-const ZONE_FOG_FAR  = [190,300,240,200];
+const ZONE_SKY     = [0x334466, 0x5588cc, 0x3366aa, 0x223355];
+const ZONE_FOG_NEAR= [70,110,90,75];
+const ZONE_FOG_FAR = [190,300,240,200];
+
+// Bridge in lakeside zone, overpasses in city zone
+const BRIDGE_SEG    = 750;
+const OVERPASS_SEGS = [90, 195];
 
 // ── §2 ROAD GENERATION ────────────────────────────────────────────────────────
+// Explicit section-based road profile (inspired by classic Road Rash / OutRun approach).
+// Each entry: [segCount, horizontal curve/seg, vertical curve/seg]
+// Positive h-curve = right, positive v-curve = uphill
+const ROAD_PROFILE = [
+  // CITY (segs 0-299): Urban tight corners
+  [25,  0.000,  0.000],  // straight start
+  [40,  0.022,  0.012],  // rise + right
+  [35, -0.030, -0.010],  // tight left, dip
+  [30,  0.000,  0.018],  // uphill straight
+  [40,  0.020,  0.000],  // sweeping right
+  [30, -0.022, -0.012],  // left + downhill
+  [40,  0.025,  0.010],  // right + hill
+  [30,  0.000,  0.000],  // breather
+  [30, -0.018,  0.012],  // long left + rise
+  // COUNTRYSIDE (segs 300-599): Open sweeping hills
+  [20,  0.000,  0.000],  // straight
+  [60,  0.015,  0.022],  // long right + big hill
+  [40,  0.000, -0.020],  // straight big downhill
+  [50, -0.020,  0.012],  // left + uphill
+  [40,  0.018, -0.014],  // right + downhill
+  [40,  0.000,  0.018],  // uphill straight
+  [30, -0.028,  0.000],  // sharp left
+  [20,  0.022,  0.000],  // sharp right chicane exit
+  // LAKESIDE (segs 600-899): Scenic gentle curves
+  [20,  0.000,  0.000],  // straight
+  [50, -0.014,  0.008],  // gentle left + slight rise
+  [30,  0.010, -0.006],  // gentle right, slight dip
+  [30,  0.000,  0.000],  // straight approach to bridge
+  [20,  0.000,  0.000],  // bridge passage (seg 750 lands here)
+  [50,  0.016,  0.005],  // post-bridge right
+  [40, -0.018,  0.010],  // lakeside left + rise
+  [60,  0.010, -0.010],  // sweeping right + descent
+  // HIGHWAY (segs 900-1199): Fast wide lanes
+  [55,  0.000,  0.000],  // long straight (overpass at ~930)
+  [45,  0.010,  0.004],  // gentle right
+  [55,  0.000,  0.000],  // straight (overpass at ~1060)
+  [55, -0.012, -0.004],  // gentle left + slight dip
+  [50,  0.006,  0.000],  // very gentle right
+  [40,  0.000,  0.000],  // final straight
+];
+
 const segs = new Array(SEGS_TOT);
 (function buildRoad(){
   let x=0,y=0,z=0,ay=0,ax=0;
   const _d=new THREE.Vector3(), _r=new THREE.Vector3(), _u=new THREE.Vector3(0,1,0);
+  let pi=0, pc=0;
   for(let i=0;i<SEGS_TOT;i++){
-    const t=i/SEGS_TOT;
-    const cy=Math.sin(t*Math.PI*7)*.022+Math.sin(t*Math.PI*17)*.008;
-    const px=Math.sin(t*Math.PI*5)*.005+Math.sin(t*Math.PI*11)*.003;
-    ay+=cy; ax+=px;
+    const prof=ROAD_PROFILE[pi];
+    const dAy=prof[1], dAx=prof[2];
+    ay+=dAy;
+    ax=Math.max(-.38,Math.min(.38,ax+dAx));
     const cdx=Math.cos(ax);
-    _d.set(Math.sin(ay)*cdx, Math.sin(ax), Math.cos(ay)*cdx).normalize();
+    _d.set(Math.sin(ay)*cdx,Math.sin(ax),Math.cos(ay)*cdx).normalize();
     _r.crossVectors(_d,_u).normalize();
     const zone=Math.floor(i/ZONE_LEN);
     const zp=i%ZONE_LEN;
@@ -121,10 +170,11 @@ const segs = new Array(SEGS_TOT);
       x,y,z,
       dx:_d.x,dy:_d.y,dz:_d.z,
       rx:_r.x,ry:_r.y,rz:_r.z,
-      ay,curve:cy,zone,
+      ay,curve:dAy,zone,
       zb:zp>280?(zp-280)/20:0
     };
     x+=_d.x*SEG_LEN; y+=_d.y*SEG_LEN; z+=_d.z*SEG_LEN;
+    if(++pc>=prof[0]){pc=0;pi++;}
   }
 })();
 
@@ -149,37 +199,27 @@ scene.fog=new THREE.Fog(ZONE_SKY[0],ZONE_FOG_NEAR[0],ZONE_FOG_FAR[0]);
 
 const camera=new THREE.PerspectiveCamera(68,1,.4,300);
 
-// Lights
 scene.add(new THREE.AmbientLight(0xffffff,.55));
 const sunLight=new THREE.DirectionalLight(0xfff8ee,.75);
 sunLight.position.set(80,60,-100);
 scene.add(sunLight);
 
-// Sky dome
 const skyDome=new THREE.Mesh(
   new THREE.SphereGeometry(240,16,8),
   new THREE.MeshBasicMaterial({color:ZONE_SKY[0],side:THREE.BackSide})
 );
 scene.add(skyDome);
 
-// Sun disc (static decoration)
 {
-  const sm=new THREE.Mesh(
-    new THREE.CircleGeometry(18,20),
-    new THREE.MeshBasicMaterial({color:0xffe090})
-  );
-  sm.position.set(90,58,-220); scene.add(sm);
-  // halo
-  const hm=new THREE.Mesh(
-    new THREE.CircleGeometry(26,20),
-    new THREE.MeshBasicMaterial({color:0xffe8b0,transparent:true,opacity:.25})
-  );
-  hm.position.set(90,58,-221); scene.add(hm);
+  const sm=new THREE.Mesh(new THREE.CircleGeometry(18,20),new THREE.MeshBasicMaterial({color:0xffe090}));
+  sm.position.set(90,58,-220);scene.add(sm);
+  const hm=new THREE.Mesh(new THREE.CircleGeometry(26,20),new THREE.MeshBasicMaterial({color:0xffe8b0,transparent:true,opacity:.25}));
+  hm.position.set(90,58,-221);scene.add(hm);
 }
 
-// Current sky color for lerp
 const skyCur=new THREE.Color(ZONE_SKY[0]);
 const skyTgt=new THREE.Color(ZONE_SKY[0]);
+const _skyNext=new THREE.Color(); // pre-allocated — avoids per-frame allocation in updateSky
 
 // ── §4 ROAD RIBBON MESHES ─────────────────────────────────────────────────────
 const NV=SEGS_VIS*2;
@@ -201,9 +241,8 @@ function makeBuf(){
   scene.add(mesh);
   return{geo,pos,clr};
 }
-const roadB=makeBuf(), shldB=makeBuf(), grassB=makeBuf(), dashB=makeBuf();
+const roadB=makeBuf(),shldB=makeBuf(),grassB=makeBuf(),dashB=makeBuf();
 
-// Zone road colors [dark, light stripe]
 const ROAD_CLR=[
   [[.21,.21,.22],[.25,.25,.26]],  // city
   [[.33,.31,.26],[.38,.36,.30]],  // countryside
@@ -214,19 +253,19 @@ const ROAD_CLR=[
 let lastRoadSeg=-1;
 function updateRoad(pd){
   const si=getSegIdx(pd);
-  const dirty=(si!==lastRoadSeg);
+  if(si===lastRoadSeg)return; // skip GPU upload — same segments in view
   lastRoadSeg=si;
 
-  const rp=roadB.pos, rc=roadB.clr;
-  const sp=shldB.pos, sc=shldB.clr;
-  const gp=grassB.pos, gc=grassB.clr;
-  const dp=dashB.pos, dc=dashB.clr;
+  const rp=roadB.pos,rc=roadB.clr;
+  const sp=shldB.pos,sc=shldB.clr;
+  const gp=grassB.pos,gc=grassB.clr;
+  const dp=dashB.pos,dc=dashB.clr;
 
   for(let i=0;i<SEGS_VIS;i++){
     const idx=(si+i)%SEGS_TOT;
     const s=segs[idx];
-    const hw=ROAD_W*.5, sw=ROAD_W*.58, gw=ROAD_W*2.0;
-    const li=i*6, ri=i*6+3;
+    const hw=ROAD_W*.5,sw=ROAD_W*.58,gw=ROAD_W*2.0;
+    const li=i*6,ri=i*6+3;
 
     rp[li  ]=s.x-s.rx*hw; rp[li+1]=s.y-s.ry*hw; rp[li+2]=s.z-s.rz*hw;
     rp[ri  ]=s.x+s.rx*hw; rp[ri+1]=s.y+s.ry*hw; rp[ri+2]=s.z+s.rz*hw;
@@ -234,104 +273,90 @@ function updateRoad(pd){
     sp[ri  ]=s.x+s.rx*sw; sp[ri+1]=s.y+s.ry*sw-.01; sp[ri+2]=s.z+s.rz*sw;
     gp[li  ]=s.x-s.rx*gw; gp[li+1]=s.y-s.ry*gw-.05; gp[li+2]=s.z-s.rz*gw;
     gp[ri  ]=s.x+s.rx*gw; gp[ri+1]=s.y+s.ry*gw-.05; gp[ri+2]=s.z+s.rz*gw;
-    // center dash: visible every 20 segs for 4 segs
     const inDash=(i%20<4);
     const dw=.18;
-    dp[li  ]=s.x-s.rx*dw+.01; dp[li+1]=s.y+.03; dp[li+2]=s.z-s.rz*dw;
-    dp[ri  ]=s.x+s.rx*dw+.01; dp[ri+1]=s.y+.03; dp[ri+2]=s.z+s.rz*dw;
+    dp[li  ]=s.x-s.rx*dw; dp[li+1]=s.y+.03; dp[li+2]=s.z-s.rz*dw;
+    dp[ri  ]=s.x+s.rx*dw; dp[ri+1]=s.y+.03; dp[ri+2]=s.z+s.rz*dw;
 
-    if(dirty){
-      const z=s.zone, stripe=Math.floor(i/4)%2;
-      const rc0=ROAD_CLR[z][stripe];
-      rc[li]=rc0[0];rc[li+1]=rc0[1];rc[li+2]=rc0[2];
-      rc[ri]=rc0[0];rc[ri+1]=rc0[1];rc[ri+2]=rc0[2];
-      // shoulder: alternating white/red-tipped in city, plain white elsewhere
-      const sw2=(z===0)?(Math.floor(i/3)%2?.92:.18):(Math.floor(i/3)%2?.88:.1);
-      const swr=(z===0&&Math.floor(i/3)%2===0)?.3:sw2;
-      sc[li]=swr;sc[li+1]=sw2*.6;sc[li+2]=sw2*.6;
-      sc[ri]=swr;sc[ri+1]=sw2*.6;sc[ri+2]=sw2*.6;
-      // grass
-      const g=(z===1||z===2)?((Math.floor(i/6)%2)?.22:.15):((Math.floor(i/6)%2)?.14:.10);
-      const gb=(z===2)?.12:.02;
-      gc[li]=0;gc[li+1]=g;gc[li+2]=gb;
-      gc[ri]=0;gc[ri+1]=g;gc[ri+2]=gb;
-      // dashes
-      if(inDash){dc[li]=.95;dc[li+1]=.85;dc[li+2]=.0;dc[ri]=.95;dc[ri+1]=.85;dc[ri+2]=.0;}
-      else{dc[li]=dc[li+1]=dc[li+2]=dc[ri]=dc[ri+1]=dc[ri+2]=0;}
-    }
+    const z=s.zone,stripe=Math.floor(i/4)%2;
+    const rc0=ROAD_CLR[z][stripe];
+    rc[li]=rc0[0];rc[li+1]=rc0[1];rc[li+2]=rc0[2];
+    rc[ri]=rc0[0];rc[ri+1]=rc0[1];rc[ri+2]=rc0[2];
+    const sw2=(z===0)?(Math.floor(i/3)%2?.92:.18):(Math.floor(i/3)%2?.88:.1);
+    const swr=(z===0&&Math.floor(i/3)%2===0)?.3:sw2;
+    sc[li]=swr;sc[li+1]=sw2*.6;sc[li+2]=sw2*.6;
+    sc[ri]=swr;sc[ri+1]=sw2*.6;sc[ri+2]=sw2*.6;
+    const g=(z===1||z===2)?((Math.floor(i/6)%2)?.22:.15):((Math.floor(i/6)%2)?.14:.10);
+    const gb=(z===2)?.12:.02;
+    gc[li]=0;gc[li+1]=g;gc[li+2]=gb;
+    gc[ri]=0;gc[ri+1]=g;gc[ri+2]=gb;
+    if(inDash){dc[li]=.95;dc[li+1]=.85;dc[li+2]=.0;dc[ri]=.95;dc[ri+1]=.85;dc[ri+2]=.0;}
+    else{dc[li]=dc[li+1]=dc[li+2]=dc[ri]=dc[ri+1]=dc[ri+2]=0;}
   }
-  [roadB,shldB,grassB,dashB].forEach(b=>{b.geo.attributes.position.needsUpdate=true;});
-  if(dirty)[roadB,shldB,grassB,dashB].forEach(b=>{b.geo.attributes.color.needsUpdate=true;});
+  [roadB,shldB,grassB,dashB].forEach(b=>{
+    b.geo.attributes.position.needsUpdate=true;
+    b.geo.attributes.color.needsUpdate=true;
+  });
 }
 
 // ── §5 ENVIRONMENT DATA ───────────────────────────────────────────────────────
-const buildings=[], lampSegs=[], treeSegs=[], guardSegs=[];
-const BRIDGE_SEG=710, OVERPASS_SEGS=[90,210];
+const buildings=[],lampSegs=[],treeSegs=[],guardSegs=[];
 
 (function buildEnvData(){
-  // deterministic seeded RNG
   let seed=1337;
   const rand=()=>{seed=(seed*1664525+1013904223)&0xffffffff;return(seed>>>0)/0xffffffff;};
 
   const CITY_WALL_COLS=[0x445566,0x334455,0x556677,0x443344,0x554433,0x665544,0x3a4455,0x445533];
-  const RURAL_COLS=[0x4d5a3d,0x3d4d3d,0x556644];
   const HWY_COLS=[0x3a3a44,0x444455,0x334444];
 
   for(let i=0;i<SEGS_TOT;i++){
     const z=segs[i].zone;
 
-    // Buildings (city z=0, highway z=3)
     if((z===0||z===3)&&i%10===0){
       const nBuildings=1+Math.floor(rand()*2);
       for(let b=0;b<nBuildings;b++){
         const side=(b===0?-1:1)*(rand()>.5?1:-1);
         const floors=z===0?(8+Math.floor(rand()*14)):(3+Math.floor(rand()*6));
-        const w=9+rand()*9, d=7+rand()*8;
+        const w=9+rand()*9,d=7+rand()*8;
         const palette=z===0?CITY_WALL_COLS:HWY_COLS;
         buildings.push({
-          si:i, side,
-          h:floors*3.2, w, d,
+          si:i,side,
+          h:floors*3.2,w,d,
           color:new THREE.Color(palette[Math.floor(rand()*palette.length)])
         });
       }
     }
-    // Lamp posts (city + highway) every 14 segs
     if((z===0||z===3)&&i%14===0){
       lampSegs.push({si:i,side:1});
       lampSegs.push({si:i,side:-1});
     }
-    // Trees (countryside + lakeside)
     if((z===1||z===2)&&i%9===0){
-      const side=(rand()>.5?1:-1);
+      const side=rand()>.5?1:-1;
       treeSegs.push({si:i,side,sc:0.7+rand()*0.7});
-      if(rand()>.45) treeSegs.push({si:i,side:-side,sc:0.6+rand()*0.5});
+      if(rand()>.45)treeSegs.push({si:i,side:-side,sc:0.6+rand()*0.5});
     }
-    // Guardrails (highway every 3 segs, lakeside right side)
     if(z===3&&i%3===0){
       guardSegs.push({si:i,side:1});
       guardSegs.push({si:i,side:-1});
     }
-    if(z===2&&i%3===0) guardSegs.push({si:i,side:1});
+    if(z===2&&i%3===0)guardSegs.push({si:i,side:1});
   }
 })();
 
 // ── §6 ENVIRONMENT INSTANCED MESHES ──────────────────────────────────────────
 const ENV={};
-const _im=new THREE.Matrix4(), _ip=new THREE.Vector3();
-const _iq=new THREE.Quaternion(), _is=new THREE.Vector3();
+const _im=new THREE.Matrix4(),_ip=new THREE.Vector3();
+const _iq=new THREE.Quaternion(),_is=new THREE.Vector3();
 const _ya=new THREE.Vector3(0,1,0);
 
-// Shared building texture (window grid)
 const _buildTex=(function(){
   const W=128,H=256;
   const c=document.createElement('canvas');
   c.width=W;c.height=H;
   const ctx=c.getContext('2d');
   ctx.fillStyle='#777';ctx.fillRect(0,0,W,H);
-  // add concrete panel lines
   ctx.strokeStyle='rgba(0,0,0,.3)';ctx.lineWidth=1;
   for(let r=0;r<H;r+=32){ctx.beginPath();ctx.moveTo(0,r);ctx.lineTo(W,r);ctx.stroke();}
-  // windows
   let seed=99;
   for(let row=0;row<11;row++){
     for(let col=0;col<4;col++){
@@ -339,10 +364,7 @@ const _buildTex=(function(){
       const lit=(seed%10>2);
       ctx.fillStyle=lit?'rgba(255,245,160,.92)':'rgba(10,12,18,.85)';
       ctx.fillRect(col*30+5,row*22+5,18,13);
-      if(lit){// window reflection
-        ctx.fillStyle='rgba(255,255,255,.25)';
-        ctx.fillRect(col*30+6,row*22+6,5,3);
-      }
+      if(lit){ctx.fillStyle='rgba(255,255,255,.25)';ctx.fillRect(col*30+6,row*22+6,5,3);}
     }
   }
   const t=new THREE.CanvasTexture(c);
@@ -357,47 +379,13 @@ function mkIns(geo,mat,count){
   scene.add(m);return m;
 }
 
-// Buildings
-ENV.bld=mkIns(
-  new THREE.BoxGeometry(1,1,1),
-  new THREE.MeshLambertMaterial({map:_buildTex}),
-  50
-);
+ENV.bld=mkIns(new THREE.BoxGeometry(1,1,1),new THREE.MeshLambertMaterial({map:_buildTex}),60);
+ENV.lpole=mkIns(new THREE.CylinderGeometry(.06,.09,9,6),new THREE.MeshLambertMaterial({color:0x888888}),28);
+ENV.lhead=mkIns(new THREE.SphereGeometry(.4,8,6),new THREE.MeshLambertMaterial({color:0xffee99,emissive:new THREE.Color(.6,.5,.1)}),28);
+ENV.ttrunk=mkIns(new THREE.CylinderGeometry(.25,.38,3,5),new THREE.MeshLambertMaterial({color:0x5a3510}),35);
+ENV.tcanopy=mkIns(new THREE.ConeGeometry(2.8,6,7),new THREE.MeshLambertMaterial({color:0x1a6618}),35);
+ENV.guard=mkIns(new THREE.BoxGeometry(SEG_LEN*3,.55,.14),new THREE.MeshLambertMaterial({color:0xcccccc}),70);
 
-// Lamp pole
-ENV.lpole=mkIns(
-  new THREE.CylinderGeometry(.06,.09,9,6),
-  new THREE.MeshLambertMaterial({color:0x888888}),
-  28
-);
-// Lamp head
-ENV.lhead=mkIns(
-  new THREE.SphereGeometry(.4,8,6),
-  new THREE.MeshLambertMaterial({color:0xffee99,emissive:new THREE.Color(.6,.5,.1)}),
-  28
-);
-
-// Tree trunk
-ENV.ttrunk=mkIns(
-  new THREE.CylinderGeometry(.25,.38,3,5),
-  new THREE.MeshLambertMaterial({color:0x5a3510}),
-  35
-);
-// Tree canopy
-ENV.tcanopy=mkIns(
-  new THREE.ConeGeometry(2.8,6,7),
-  new THREE.MeshLambertMaterial({color:0x1a6618}),
-  35
-);
-
-// Guardrail segment
-ENV.guard=mkIns(
-  new THREE.BoxGeometry(SEG_LEN*3,.55,.14),
-  new THREE.MeshLambertMaterial({color:0xcccccc}),
-  70
-);
-
-// Lake (zone 2 only)
 ENV.lake=new THREE.Mesh(
   new THREE.PlaneGeometry(90,220),
   new THREE.MeshLambertMaterial({color:0x1a4d88,transparent:true,opacity:.76,depthWrite:false})
@@ -407,28 +395,16 @@ ENV.lake.renderOrder=1;
 ENV.lake.visible=false;
 scene.add(ENV.lake);
 
-// Bridge (zone 2)
-ENV.bridge=new THREE.Mesh(
-  new THREE.BoxGeometry(ROAD_W+16,.9,48),
-  new THREE.MeshLambertMaterial({color:0x888877})
-);
-ENV.bridge.visible=false;
-scene.add(ENV.bridge);
-
-// Bridge railings (two thin boxes)
+ENV.bridge=new THREE.Mesh(new THREE.BoxGeometry(ROAD_W+16,.9,48),new THREE.MeshLambertMaterial({color:0x888877}));
+ENV.bridge.visible=false;scene.add(ENV.bridge);
 ENV.brailL=new THREE.Mesh(new THREE.BoxGeometry(.6,1.6,48),new THREE.MeshLambertMaterial({color:0x777766}));
 ENV.brailR=ENV.brailL.clone();
 ENV.brailL.visible=ENV.brailR.visible=false;
 scene.add(ENV.brailL);scene.add(ENV.brailR);
 
-// Overpasses (city zone)
 ENV.overpasses=OVERPASS_SEGS.map(()=>{
-  const m=new THREE.Mesh(
-    new THREE.BoxGeometry(ROAD_W+18,1.2,10),
-    new THREE.MeshLambertMaterial({color:0x667788})
-  );
+  const m=new THREE.Mesh(new THREE.BoxGeometry(ROAD_W+18,1.2,10),new THREE.MeshLambertMaterial({color:0x667788}));
   m.visible=false;scene.add(m);
-  // supports
   const sp=new THREE.Mesh(new THREE.BoxGeometry(1.5,8,1.5),m.material.clone());
   sp.visible=false;scene.add(sp);
   const sp2=sp.clone();sp2.visible=false;scene.add(sp2);
@@ -447,13 +423,12 @@ function updateEnv(pd){
   if(si===lastEnvSeg)return;
   lastEnvSeg=si;
 
-  // buildings
   let bc=0;
   for(const b of buildings){
-    if(!inWindow(b.si,si)||bc>=50)continue;
+    if(!inWindow(b.si,si)||bc>=60)continue;
     const s=segs[b.si];
     const ld=ROAD_W*.64+b.w*.5;
-    _ip.set(s.x+s.rx*b.side*ld, s.y+b.h*.5, s.z+s.rz*b.side*ld);
+    _ip.set(s.x+s.rx*b.side*ld,s.y+b.h*.5,s.z+s.rz*b.side*ld);
     _iq.setFromAxisAngle(_ya,s.ay+(Math.PI*.5)*(b.side>0?1:-1));
     _is.set(b.w,b.h,b.d);
     _im.compose(_ip,_iq,_is);
@@ -465,44 +440,39 @@ function updateEnv(pd){
   ENV.bld.instanceMatrix.needsUpdate=true;
   if(ENV.bld.instanceColor)ENV.bld.instanceColor.needsUpdate=true;
 
-  // lamp posts
   let lc=0;
   for(const l of lampSegs){
     if(!inWindow(l.si,si)||lc>=28)continue;
     const s=segs[l.si];
     const ld=ROAD_W*.55+1.2;
-    const px2=s.x+s.rx*l.side*ld, py2=s.y, pz2=s.z+s.rz*l.side*ld;
+    const px2=s.x+s.rx*l.side*ld,py2=s.y,pz2=s.z+s.rz*l.side*ld;
     _ip.set(px2,py2+4.5,pz2);_iq.set(0,0,0,1);_is.set(1,1,1);
     _im.compose(_ip,_iq,_is);ENV.lpole.setMatrixAt(lc,_im);
-    // arm: offset head +1.5 toward road
     _ip.set(px2-s.rx*l.side*.8,py2+9.2,pz2-s.rz*l.side*.8);
     _im.compose(_ip,_iq,_is);ENV.lhead.setMatrixAt(lc,_im);
     lc++;
   }
-  ENV.lpole.count=lc; ENV.lhead.count=lc;
+  ENV.lpole.count=lc;ENV.lhead.count=lc;
   ENV.lpole.instanceMatrix.needsUpdate=true;
   ENV.lhead.instanceMatrix.needsUpdate=true;
 
-  // trees
   let tc=0;
   for(const t of treeSegs){
     if(!inWindow(t.si,si)||tc>=35)continue;
     const s=segs[t.si];
-    const ld=(ROAD_W*.56+3+t.sc*2)*Math.abs(t.side)/t.side*t.side;
-    const trunkH=2.5*t.sc, topH=5*t.sc, topR=2.6*t.sc;
-    _ip.set(s.x+s.rx*ld*1.0,s.y+trunkH*.5,s.z+s.rz*ld*1.0);
+    // FIX: was `* Math.abs(t.side)/t.side*t.side` which always evaluated to positive
+    const ld=(ROAD_W*.56+3+t.sc*2)*t.side;
+    _ip.set(s.x+s.rx*ld,s.y+1.25*t.sc,s.z+s.rz*ld);
     _iq.set(0,0,0,1);_is.set(t.sc,t.sc,t.sc);
     _im.compose(_ip,_iq,_is);ENV.ttrunk.setMatrixAt(tc,_im);
-    _ip.set(s.x+s.rx*ld*1.0,s.y+trunkH+topH*.4,s.z+s.rz*ld*1.0);
-    _is.set(t.sc,t.sc,t.sc);
+    _ip.set(s.x+s.rx*ld,s.y+(2.5+3)*t.sc,s.z+s.rz*ld);
     _im.compose(_ip,_iq,_is);ENV.tcanopy.setMatrixAt(tc,_im);
     tc++;
   }
-  ENV.ttrunk.count=tc; ENV.tcanopy.count=tc;
+  ENV.ttrunk.count=tc;ENV.tcanopy.count=tc;
   ENV.ttrunk.instanceMatrix.needsUpdate=true;
   ENV.tcanopy.instanceMatrix.needsUpdate=true;
 
-  // guardrails
   let gc=0;
   for(const g of guardSegs){
     if(!inWindow(g.si,si)||gc>=70)continue;
@@ -518,7 +488,6 @@ function updateEnv(pd){
   ENV.guard.count=gc;
   ENV.guard.instanceMatrix.needsUpdate=true;
 
-  // lake (zone 2)
   const curZone=segs[si].zone;
   ENV.lake.visible=(curZone===2);
   if(curZone===2){
@@ -528,7 +497,6 @@ function updateEnv(pd){
     ENV.lake.rotation.y=-mid.ay;
   }
 
-  // bridge
   const bs=segs[BRIDGE_SEG];
   const bridgeDist=Math.abs(BRIDGE_SEG-si);
   const showBridge=(bridgeDist<SEGS_VIS+10||bridgeDist>SEGS_TOT-SEGS_VIS-10);
@@ -544,7 +512,6 @@ function updateEnv(pd){
     ENV.brailR.rotation.y=bs.ay;
   }
 
-  // overpasses
   OVERPASS_SEGS.forEach((os,oi)=>{
     const oss=segs[os];
     const od=Math.abs(os-si);
@@ -563,12 +530,13 @@ function updateEnv(pd){
   });
 }
 
-// Sky zone transition
 function updateSky(pd,dt){
   const si=getSegIdx(pd);
   const s=segs[si];
-  const z=s.zone, zb=s.zb, nz=(z+1)%4;
-  skyTgt.set(ZONE_SKY[z]).lerp(new THREE.Color(ZONE_SKY[nz]),zb);
+  const z=s.zone,zb=s.zb,nz=(z+1)%4;
+  // FIX: reuse pre-allocated _skyNext instead of new THREE.Color() each frame
+  _skyNext.set(ZONE_SKY[nz]);
+  skyTgt.set(ZONE_SKY[z]).lerp(_skyNext,zb);
   skyCur.lerp(skyTgt,dt*1.2);
   scene.background.copy(skyCur);
   scene.fog.color.copy(skyCur);
@@ -584,13 +552,10 @@ const rainGeo=new THREE.BufferGeometry();
 rainGeo.setAttribute('position',new THREE.BufferAttribute(rainPos,3));
 const rainMat=new THREE.PointsMaterial({color:0xaaccee,size:.22,transparent:true,opacity:.5,depthWrite:false,sizeAttenuation:true});
 const rainMesh=new THREE.Points(rainGeo,rainMat);
-rainMesh.frustumCulled=false;
-rainMesh.renderOrder=2;
-rainMesh.visible=false;
+rainMesh.frustumCulled=false;rainMesh.renderOrder=2;rainMesh.visible=false;
 scene.add(rainMesh);
 let rainIntensity=0;
 
-// init particles scattered around origin
 for(let i=0;i<RAIN_N;i++){
   rainPos[i*3]=(Math.random()-.5)*70;
   rainPos[i*3+1]=Math.random()*40;
@@ -605,8 +570,7 @@ function updateRain(dt){
   if(rainIntensity<.01){rainMesh.visible=false;return;}
   rainMesh.visible=true;
   rainMat.opacity=.3+rainIntensity*.45;
-
-  const cx=camera.position.x, cy=camera.position.y, cz=camera.position.z;
+  const cx=camera.position.x,cy=camera.position.y,cz=camera.position.z;
   for(let i=0;i<RAIN_N;i++){
     const b=i*3;
     rainPos[b]+=.4*dt;
@@ -635,62 +599,46 @@ function makeBikeTex(color,crashed=false){
   tc.width=96;tc.height=80;
   const x=tc.getContext('2d');
   x.save();x.translate(48,72);
-
   if(crashed){
     x.rotate(.55);
-    // shadow
     x.fillStyle='rgba(0,0,0,.3)';x.beginPath();x.ellipse(0,4,22,6,0,0,Math.PI*2);x.fill();
-    // bike
     const bg=x.createLinearGradient(-22,-6,22,6);
     bg.addColorStop(0,shadeHex(color,-.4));bg.addColorStop(.5,color);bg.addColorStop(1,shadeHex(color,-.4));
     x.fillStyle=bg;x.fillRect(-22,-6,44,12);
-    x.fillStyle='#333';
-    x.beginPath();x.arc(-20,8,9,0,Math.PI*2);x.fill();
+    x.fillStyle='#333';x.beginPath();x.arc(-20,8,9,0,Math.PI*2);x.fill();
     x.beginPath();x.arc(20,8,9,0,Math.PI*2);x.fill();
-    x.fillStyle='#555';
-    x.beginPath();x.arc(-20,8,4,0,Math.PI*2);x.fill();
+    x.fillStyle='#555';x.beginPath();x.arc(-20,8,4,0,Math.PI*2);x.fill();
     x.beginPath();x.arc(20,8,4,0,Math.PI*2);x.fill();
-    // rider
     x.fillStyle='#fcb';x.fillRect(-10,-24,14,14);
     x.beginPath();x.arc(-3,-30,8,0,Math.PI*2);x.fill();
     x.fillStyle='#111';x.beginPath();x.arc(-3,-30,8,Math.PI,Math.PI*2);x.fill();
-  } else {
-    // ground shadow
+  }else{
     x.fillStyle='rgba(0,0,0,.28)';x.beginPath();x.ellipse(0,2,16,5,0,0,Math.PI*2);x.fill();
-    // rear wheel
     const rw=x.createRadialGradient(-2,-2,1,0,0,10);
     rw.addColorStop(0,'#3a3a3a');rw.addColorStop(1,'#080808');
     x.fillStyle=rw;x.beginPath();x.ellipse(0,0,9,10,0,0,Math.PI*2);x.fill();
     const rim1=x.createRadialGradient(-1,-1,1,0,0,5);
     rim1.addColorStop(0,'#aaa');rim1.addColorStop(1,'#555');
     x.fillStyle=rim1;x.beginPath();x.ellipse(0,0,5,5.5,0,0,Math.PI*2);x.fill();
-    // front wheel
     x.fillStyle='#0d0d0d';x.beginPath();x.ellipse(-17,-18,7.5,9,-.28,0,Math.PI*2);x.fill();
     x.fillStyle='#555';x.beginPath();x.ellipse(-17,-18,3.5,4,-.28,0,Math.PI*2);x.fill();
-    // frame
     const fg=x.createLinearGradient(2,-2,-18,-22);
     fg.addColorStop(0,color);fg.addColorStop(1,shadeHex(color,-.35));
     x.fillStyle=fg;
     x.beginPath();x.moveTo(2,-2);x.lineTo(-7,-24);x.lineTo(-18,-20);x.lineTo(-11,-5);x.closePath();x.fill();
     x.strokeStyle='rgba(255,255,255,.25)';x.lineWidth=1;
     x.beginPath();x.moveTo(-1,-4);x.lineTo(-13,-22);x.stroke();
-    // seat
     x.fillStyle='#1a1a1a';x.fillRect(-5,-26,15,6);
-    // engine block
     x.fillStyle='#2a2a35';x.fillRect(-3,-17,10,8);
-    // exhaust
     const ex=x.createLinearGradient(7,-12,13,14);
     ex.addColorStop(0,'#bbb');ex.addColorStop(.5,'#777');ex.addColorStop(1,'#999');
     x.strokeStyle=ex;x.lineWidth=3.5;x.lineCap='round';
     x.beginPath();x.moveTo(7,-12);x.quadraticCurveTo(16,2,12,15);x.stroke();
-    // fork
     x.strokeStyle='#999';x.lineWidth=2.5;
     x.beginPath();x.moveTo(-12,-8);x.lineTo(-17,-18);x.stroke();
     x.beginPath();x.moveTo(-9,-8);x.lineTo(-14,-18);x.stroke();
-    // rider body
     x.fillStyle='#0a0a40';x.fillRect(-3,-44,12,18);
     x.fillStyle=color;x.fillRect(-3,-37,12,4);
-    // helmet
     const hg=x.createRadialGradient(-1,-47,1,2,-47,8);
     hg.addColorStop(0,'#333');hg.addColorStop(1,'#050510');
     x.fillStyle=hg;x.beginPath();x.arc(2,-47,8,0,Math.PI*2);x.fill();
@@ -698,15 +646,21 @@ function makeBikeTex(color,crashed=false){
     x.fillStyle='rgba(150,215,255,.6)';x.fillRect(-1,-49,5,3);
   }
   x.restore();
-  const t=new THREE.CanvasTexture(tc);
-  return t;
+  return new THREE.CanvasTexture(tc);
 }
 
-// Player bike (canvas overlay, 220×200)
+// Player bike canvas overlay
 const pcanvas=document.getElementById('pcanvas');
 const px=pcanvas.getContext('2d');
 
-function drawPlayerBike(lean,crashed,hp){
+// Speed-streak positions — generated once, animated by time offset
+const STREAK_POS=Array.from({length:10},()=>({
+  x:(Math.random()-.5)*190,
+  y:(Math.random()-.5)*140,
+  len:18+Math.random()*28
+}));
+
+function drawPlayerBike(lean,crashed,hp,speed,maxSpeed){
   const W=220,H=200;
   px.clearRect(0,0,W,H);
   px.save();
@@ -714,20 +668,16 @@ function drawPlayerBike(lean,crashed,hp){
 
   if(crashed){
     px.rotate(.38);
-    // shadow
     px.fillStyle='rgba(0,0,0,.35)';px.beginPath();px.ellipse(0,10,38,10,0,0,Math.PI*2);px.fill();
-    // bike body
     const cbg=px.createLinearGradient(-34,-9,34,9);
     cbg.addColorStop(0,'#0a1888');cbg.addColorStop(.5,'#2244dd');cbg.addColorStop(1,'#0a1888');
     px.fillStyle=cbg;px.fillRect(-34,-9,68,18);
-    // wheels
     px.fillStyle='#111';
     px.beginPath();px.arc(-32,14,16,0,Math.PI*2);px.fill();
     px.beginPath();px.arc(32,14,16,0,Math.PI*2);px.fill();
     px.fillStyle='#555';
     px.beginPath();px.arc(-32,14,8,0,Math.PI*2);px.fill();
     px.beginPath();px.arc(32,14,8,0,Math.PI*2);px.fill();
-    // rider
     px.fillStyle='#fcb';px.fillRect(-14,-32,20,16);
     px.beginPath();px.arc(-4,-40,12,0,Math.PI*2);px.fill();
     px.fillStyle='#111';px.beginPath();px.arc(-4,-40,12,Math.PI,Math.PI*2);px.fill();
@@ -736,32 +686,36 @@ function drawPlayerBike(lean,crashed,hp){
 
   px.rotate(lean*.28);
 
-  // drop shadow
+  // Speed streaks — horizontal motion blur lines at high speed
+  const speedRatio=Math.max(0,(speed-maxSpeed*.68)/(maxSpeed*.32));
+  if(speedRatio>0){
+    const tOff=performance.now()*.065;
+    px.save();
+    px.globalAlpha=speedRatio*.28;
+    px.strokeStyle='#99bbff';
+    px.lineWidth=1.5;
+    STREAK_POS.forEach((s,idx)=>{
+      const oy=((s.y+tOff*(5+idx*.7))%160)-80;
+      px.beginPath();px.moveTo(s.x-s.len*.5,oy);px.lineTo(s.x+s.len*.5,oy);px.stroke();
+    });
+    px.restore();
+  }
+
   const shadow=px.createRadialGradient(6,8,2,6,8,34);
   shadow.addColorStop(0,'rgba(0,0,0,.45)');shadow.addColorStop(1,'rgba(0,0,0,0)');
   px.fillStyle=shadow;px.beginPath();px.ellipse(6,8,36,12,0,0,Math.PI*2);px.fill();
 
-  // rear wheel
   const rwg=px.createRadialGradient(-4,-4,2,10,0,19);
   rwg.addColorStop(0,'#333');rwg.addColorStop(.7,'#111');rwg.addColorStop(1,'#000');
   px.fillStyle=rwg;px.beginPath();px.ellipse(10,0,17,20,0,0,Math.PI*2);px.fill();
-  // rim
   const rim=px.createRadialGradient(7,-3,1,10,0,10);
   rim.addColorStop(0,'#bbb');rim.addColorStop(.4,'#888');rim.addColorStop(1,'#444');
   px.fillStyle=rim;px.beginPath();px.ellipse(10,0,10,12,0,0,Math.PI*2);px.fill();
-  // spokes
   px.save();px.translate(10,0);
-  for(let i=0;i<6;i++){
-    px.rotate(Math.PI/3);
-    px.strokeStyle='#666';px.lineWidth=1.5;
-    px.beginPath();px.moveTo(0,0);px.lineTo(0,9);px.stroke();
-  }
+  for(let i=0;i<6;i++){px.rotate(Math.PI/3);px.strokeStyle='#666';px.lineWidth=1.5;px.beginPath();px.moveTo(0,0);px.lineTo(0,9);px.stroke();}
   px.restore();
-  // brake disc
-  px.strokeStyle='#555';px.lineWidth=3;
-  px.beginPath();px.arc(10,0,6.5,.3,2.1);px.stroke();
+  px.strokeStyle='#555';px.lineWidth=3;px.beginPath();px.arc(10,0,6.5,.3,2.1);px.stroke();
 
-  // exhaust
   const exg=px.createLinearGradient(8,-14,15,18);
   exg.addColorStop(0,'#ccc');exg.addColorStop(.5,'#888');exg.addColorStop(1,'#aaa');
   px.strokeStyle=exg;px.lineWidth=6;px.lineCap='round';
@@ -769,80 +723,64 @@ function drawPlayerBike(lean,crashed,hp){
   px.strokeStyle='rgba(0,0,0,.35)';px.lineWidth=2.5;
   px.beginPath();px.moveTo(8,-14);px.quadraticCurveTo(19,2,15,17);px.stroke();
 
-  // fork
   const fkg=px.createLinearGradient(-13,-8,-30,-36);
   fkg.addColorStop(0,'#bbb');fkg.addColorStop(.5,'#888');fkg.addColorStop(1,'#ccc');
   px.strokeStyle=fkg;px.lineWidth=4.5;
   px.beginPath();px.moveTo(-13,-8);px.lineTo(-30,-36);px.stroke();
   px.beginPath();px.moveTo(-8,-8);px.lineTo(-25,-36);px.stroke();
 
-  // front wheel
   const fwg=px.createRadialGradient(-32,-40,2,-28,-34,17);
   fwg.addColorStop(0,'#333');fwg.addColorStop(1,'#000');
   px.fillStyle=fwg;px.beginPath();px.ellipse(-28,-34,15,18,-.28,0,Math.PI*2);px.fill();
   const frim=px.createRadialGradient(-31,-37,1,-28,-34,8);
   frim.addColorStop(0,'#aaa');frim.addColorStop(1,'#444');
   px.fillStyle=frim;px.beginPath();px.ellipse(-28,-34,8,10,-.28,0,Math.PI*2);px.fill();
-  px.strokeStyle='#555';px.lineWidth=2.5;
-  px.beginPath();px.arc(-28,-34,6,.4,2.3);px.stroke();
+  px.strokeStyle='#555';px.lineWidth=2.5;px.beginPath();px.arc(-28,-34,6,.4,2.3);px.stroke();
 
-  // engine block
   px.fillStyle='#1e1e28';px.fillRect(-5,-22,16,14);
   px.fillStyle='#2e2e38';
   px.fillRect(-3,-20,3,10);px.fillRect(1,-20,3,10);px.fillRect(5,-20,3,10);
 
-  // frame / fairing
   const frg=px.createLinearGradient(12,-4,-28,-44);
   frg.addColorStop(0,'#1a36e0');frg.addColorStop(.4,'#2244dd');frg.addColorStop(1,'#0c1a99');
   px.fillStyle=frg;
   px.beginPath();px.moveTo(12,-4);px.lineTo(-5,-48);px.lineTo(-28,-40);px.lineTo(-14,-8);px.closePath();px.fill();
-  // highlight stripe
   px.strokeStyle='rgba(255,255,255,.3)';px.lineWidth=2.5;
   px.beginPath();px.moveTo(2,-8);px.lineTo(-18,-42);px.stroke();
 
-  // seat
   const stg=px.createLinearGradient(-7,-54,22,-46);
   stg.addColorStop(0,'#111');stg.addColorStop(1,'#2a2a2a');
   px.fillStyle=stg;px.fillRect(-7,-54,28,11);
 
-  // rider: legs
   px.fillStyle='#080830';
   px.save();px.translate(6,-52);px.rotate(.25);px.fillRect(-5,0,10,22);px.restore();
   px.save();px.translate(0,-52);px.rotate(.1);px.fillRect(-4,0,9,18);px.restore();
 
-  // rider: body
   const bdg=px.createLinearGradient(-9,-88,14,-88);
   bdg.addColorStop(0,'rgba(60,60,140,.9)');bdg.addColorStop(1,'rgba(0,0,50,0)');
   px.fillStyle='#0a0a4e';px.fillRect(-9,-88,24,36);
   px.fillStyle=bdg;px.fillRect(-9,-88,24,18);
-  // racing stripe
   px.fillStyle='#f80';px.fillRect(-9,-76,24,6);
-  // chest highlight
   px.strokeStyle='rgba(255,255,255,.15)';px.lineWidth=1.5;
   px.beginPath();px.moveTo(-4,-86);px.lineTo(-4,-70);px.stroke();
 
-  // arms
   px.fillStyle='#0a0a4e';
   px.save();px.translate(-9,-80);px.rotate(-.72);px.fillRect(0,-5,28,10);px.restore();
-  px.fillStyle='#222';// gloves
+  px.fillStyle='#222';
   px.save();px.translate(-9,-80);px.rotate(-.72);px.fillRect(22,-4,8,8);px.restore();
 
-  // helmet
   const hmg=px.createRadialGradient(-4,-95,3,2,-89,17);
   hmg.addColorStop(0,'#252525');hmg.addColorStop(.7,'#0e0e0e');hmg.addColorStop(1,'#000');
   px.fillStyle=hmg;px.beginPath();px.arc(2,-89,17,0,Math.PI*2);px.fill();
   px.fillStyle='#f80';px.fillRect(-6,-99,18,8);
-  // visor
   const vsg=px.createLinearGradient(-4,-97,13,-85);
   vsg.addColorStop(0,'rgba(140,215,255,.85)');
   vsg.addColorStop(.5,'rgba(180,235,255,.55)');
   vsg.addColorStop(1,'rgba(100,185,225,.3)');
   px.fillStyle=vsg;
   px.beginPath();px.ellipse(2,-89,13,6.5,0,0,Math.PI);px.fill();
-  // visor glint
   px.fillStyle='rgba(255,255,255,.5)';px.fillRect(-2,-95,7,2);
 
-  // low HP flash
   if(hp<40){
     const a=.38*(1-hp/40)*(0.5+0.5*Math.sin(Date.now()/100));
     px.save();px.globalAlpha=a;px.fillStyle='#f00';
@@ -886,6 +824,13 @@ class NPC{
   }
   update(dt,pd){
     if(this.finished){this.spr.visible=false;this.shd.visible=false;return;}
+
+    // Cull NPCs far behind the player — avoids rendering stale sprites off-screen
+    const distGap=pd-this.dist;
+    if(distGap>SEGS_VIS*SEG_LEN*1.1&&!this.crashed&&!this.flyOff){
+      this.spr.visible=false;this.shd.visible=false;return;
+    }
+
     if(this.flyOff){
       this.flyTimer-=dt;
       const wp=this.spr.position;
@@ -912,7 +857,7 @@ class NPC{
       this.shd.position.set(wp.x,wp.y-2.4,wp.z);
       return;
     }
-    // rubber-band AI
+    // Rubber-band AI
     const gap=pd-this.dist;
     let tspd=this.baseSpeed;
     if(gap>110)tspd=this.maxSpeed*1.18;
@@ -956,10 +901,10 @@ class NPC{
 const P={
   dist:0,latOff:0,speed:0,maxSpeed:62,
   hp:100,nitro:100,lap:1,lean:0,
-  cpP:0,cpK:0,           // punch/kick cooldowns
+  cpP:0,cpK:0,
   crashTimer:0,crashed:false,finished:false,
-  nccool:0,              // NPC collision cooldown
-  prevClose:new Set()    // NPC indices in range last frame
+  nccool:0,
+  prevClose:new Set()
 };
 
 function resetP(){
@@ -978,7 +923,7 @@ function triggerCrash(msg){
 const TC={
   active:new Map(),
   steerL:false,steerR:false,
-  ltap:0,rtap:0,         // last tap time per side
+  ltap:0,rtap:0,
   DBL:340
 };
 
@@ -999,10 +944,9 @@ cvs.addEventListener('touchstart',e=>{
     TC.active.set(t.identifier,{x:t.clientX,y:t.clientY,side,t0:now});
     const lastTap=side===0?TC.ltap:TC.rtap;
     if(now-lastTap<TC.DBL){
-      // double tap = kick
       if(gameRunning)doKick(side===0?-1:1);
       if(side===0)TC.ltap=0;else TC.rtap=0;
-    } else {
+    }else{
       if(side===0)TC.ltap=now;else TC.rtap=now;
     }
   }
@@ -1026,10 +970,9 @@ cvs.addEventListener('touchend',e=>{
   for(const t of e.changedTouches){
     const entry=TC.active.get(t.identifier);
     if(entry){
-      // single tap punch (if short press, and wasn't a kick)
       if(now-entry.t0<250&&gameRunning){
         const dx=Math.abs(t.clientX-entry.x),dy=Math.abs(t.clientY-entry.y);
-        if(dx<20&&dy<20) doPunch(entry.side===0?-1:1);
+        if(dx<20&&dy<20)doPunch(entry.side===0?-1:1);
       }
       TC.active.delete(t.identifier);
     }
@@ -1042,7 +985,6 @@ cvs.addEventListener('touchcancel',e=>{
   computeSteer();
 },{passive:false});
 
-// Show hint after load
 setTimeout(()=>{
   const h=document.getElementById('thint');
   h.classList.add('show');
@@ -1084,16 +1026,16 @@ function doKick(dir){
 }
 
 // ── §13 CAMERA ────────────────────────────────────────────────────────────────
-const camTgt={px:0,py:5,pz:0,lx:0,ly:1.5,lz:6};
+const camTgt={px:0,py:5,pz:0,lx:0,ly:1.5,lz:6,roll:0};
 
 function updateCamera(dt){
   const p=segPos(P.dist);
   const s=segs[p.idx];
-  const lx=s.rx*P.latOff, lz=s.rz*P.latOff;
-  const tpx=p.x-s.dx*9+lx, tpy=p.y+4.6, tpz=p.z-s.dz*9+lz;
+  const lx=s.rx*P.latOff,lz=s.rz*P.latOff;
+  const tpx=p.x-s.dx*9+lx,tpy=p.y+4.6,tpz=p.z-s.dz*9+lz;
   const ai=(p.idx+24)%SEGS_TOT;
   const sa=segs[ai];
-  const tlx=sa.x+lx, tly=sa.y+1.6, tlz=sa.z+lz;
+  const tlx=sa.x+lx,tly=sa.y+1.6,tlz=sa.z+lz;
   const lf=1-Math.pow(1-.14,dt*60);
   camTgt.px+=(tpx-camTgt.px)*lf;
   camTgt.py+=(tpy-camTgt.py)*lf;
@@ -1101,8 +1043,12 @@ function updateCamera(dt){
   camTgt.lx+=(tlx-camTgt.lx)*lf;
   camTgt.ly+=(tly-camTgt.ly)*lf;
   camTgt.lz+=(tlz-camTgt.lz)*lf;
+  // Camera roll into corners — increases sense of speed on curves
+  const targetRoll=-s.curve*280;
+  camTgt.roll+=(targetRoll-camTgt.roll)*dt*5;
   camera.position.set(camTgt.px,camTgt.py,camTgt.pz);
   camera.lookAt(camTgt.lx,camTgt.ly,camTgt.lz);
+  camera.rotation.z+=camTgt.roll*(Math.PI/180);
 }
 
 // ── §14 HUD ────────────────────────────────────────────────────────────────────
@@ -1112,6 +1058,7 @@ const hudSpd=document.getElementById('spd');
 const hudPos=document.getElementById('pos');
 const hudLap=document.getElementById('lap');
 const hudZon=document.getElementById('zon');
+const vignEl=document.getElementById('vign');
 
 function updateHUD(){
   hudHP.style.width=Math.max(0,P.hp)+'%';
@@ -1134,10 +1081,10 @@ function startGame(){
   npcs=[];
   for(let i=0;i<NUM_NPCS;i++)
     npcs.push(new NPC(i,-30-i*20,NPC_COLS[i],NPC_NAMES[i]));
-  // reset camera target
   const p=segPos(0),s=segs[0];
   camTgt.px=p.x-s.dx*9;camTgt.py=p.y+4.6;camTgt.pz=p.z-s.dz*9;
   camTgt.lx=segs[24].x;camTgt.ly=segs[24].y+1.6;camTgt.lz=segs[24].z;
+  camTgt.roll=0;
   gameTime=0;gameRunning=true;
 }
 
@@ -1172,24 +1119,21 @@ function update(dt){
     updateSky(P.dist,dt);
     updateRain(dt);
     updateCamera(dt);
-    drawPlayerBike(0,true,P.hp);
+    drawPlayerBike(0,true,P.hp,P.speed,P.maxSpeed);
+    vignEl.style.opacity='0';
     updateHUD();
     return;
   }
 
-  // === PHYSICS ===
-  // auto-acceleration: always moving; both fingers = nitro
+  // Auto-acceleration; both fingers = nitro
   const bothDown=TC.steerL&&TC.steerR;
-  const anyTouch=TC.active.size>0;
   const usingNitro=bothDown&&P.nitro>0;
-
   const tspd=usingNitro?P.maxSpeed*1.24:P.maxSpeed;
   const accRate=usingNitro?18:13;
   P.speed+=(tspd-P.speed)*Math.min(1,accRate*dt);
-  P.speed=Math.max(5,P.speed); // never fully stop
+  P.speed=Math.max(5,P.speed);
   P.nitro=usingNitro?Math.max(0,P.nitro-dt*22):Math.min(100,P.nitro+dt*9);
 
-  // steering
   const sl=TC.steerL&&!TC.steerR;
   const sr=TC.steerR&&!TC.steerL;
   const steerRate=12*(P.speed/P.maxSpeed+.32);
@@ -1202,21 +1146,22 @@ function update(dt){
 
   P.dist+=P.speed*dt;
 
-  // lap
   if(P.dist>TOTAL_DIST*P.lap){
     P.lap++;
     if(P.lap>LAPS){P.finished=true;gameRunning=false;showFinish();return;}
     showMsg(`LAP ${P.lap}!`,'#0cf');
   }
 
-  // off-road
-  if(Math.abs(P.latOff)>ROAD_W*.46){
+  // Off-road: HP drain + red vignette feedback
+  const offRoad=Math.abs(P.latOff)>ROAD_W*.46;
+  if(offRoad){
     P.hp-=dt*18;
     if(P.hp<=0)triggerCrash('WIPEOUT!');
   }
+  vignEl.style.opacity=offRoad?'1':'0';
 
-  // === NPC COLLISION (event-based) ===
-  if(P.nccool===0){
+  // NPC collision (enter-once with cooldown)
+  if(P.nccool<=0){
     const now=new Set();
     for(const n of npcs){
       if(n.crashed||n.flyOff||n.finished)continue;
@@ -1233,29 +1178,32 @@ function update(dt){
       }
     }
     P.prevClose=now;
-  } else {
+  }else{
     P.prevClose=new Set();
   }
 
-  // === NPC UPDATES ===
   for(const n of npcs)n.update(dt,P.dist);
 
-  // === ENVIRONMENT ===
   updateRoad(P.dist);
   updateEnv(P.dist);
   updateSky(P.dist,dt);
   updateRain(dt);
   updateCamera(dt);
-  drawPlayerBike(P.lean,false,P.hp);
+  drawPlayerBike(P.lean,false,P.hp,P.speed,P.maxSpeed);
   updateHUD();
 }
 
 // ── §17 RENDER LOOP ──────────────────────────────────────────────────────────
+const _vignCache={state:null};
+
 function resize(){
   const W=innerWidth,H=innerHeight;
   renderer.setSize(W,H);
   camera.aspect=W/H;
   camera.updateProjectionMatrix();
+  // Scale player bike canvas for small screens
+  const s=Math.min(1,W/420);
+  pcanvas.style.transform=`translateX(-50%) scale(${s})`;
 }
 window.addEventListener('resize',resize);
 resize();
@@ -1270,7 +1218,7 @@ function loop(t){
   renderer.render(scene,camera);
 }
 
-// Initial static render for the start screen
+// Initial static render for start screen
 updateRoad(0);
 updateEnv(0);
 const _p0=segPos(0),_s0=segs[0];
